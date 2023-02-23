@@ -1,0 +1,93 @@
+trigger:
+- main
+
+resources:
+- repo: self
+
+variables:
+  tag: '$(Build.BuildId)'
+
+  # Variáveis para execução dos testes de integração
+  File_Log_Execution_WebApp: 'log-execution-restapi.log'
+  Path_Project: './APIFinancas'
+  Dll_Project: 'APIFinancas.dll'
+  Path_Tests: './Tests'
+  Collection_Postman: 'CalculoJurosCompostos.postman_collection.json'
+
+stages:
+- stage: Tests
+  displayName: Tests stage
+  jobs:
+  - job: Tests
+    displayName: Tests
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: |
+        echo '*** SDKs do .NET intalados ***'
+        dotnet --list-sdks
+        echo '*** Versão assumida como default para o .NET ***'
+        dotnet --version
+      displayName: Exibir versão default do .NET
+    - script: |
+        dotnet publish $(Path_Project) -c Release -o app
+        cd ./app
+        nohup dotnet $(Dll_Project) > $(File_Log_Execution_WebApp) 2>&1 &
+        echo 'Aguardando a inicialização da aplicação a ser testada...'
+        sleep 10s
+      displayName: Executar a aplicação a ser testada em background (nohup)
+      env:
+        ASPNETCORE_URLS: 'http://localhost:5000'
+    - script: |
+        echo "** Versão Global do Newman **"
+        newman -v
+        npm install newman-reporter-htmlextra@1.22.11
+        npm install newman-reporter-junitfullreport@1.0.4
+      displayName:  Instalar packages newman-reporter-htmlextra e newman-reporter-junitfullreport
+      condition: always() 
+    - script: |
+        cd $(Path_Tests)
+        npx newman run $(Collection_Postman) -r cli,htmlextra,junitfullreport
+      displayName: Executar e gerar resultados em HTML e XML dos testes da API REST com Newman
+      condition: always()
+    - script: |
+        cd $(Path_Tests)/newman
+        ls
+      displayName: Listar arquivos gerados após testes da API REST com Newman
+      condition: always() 
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/newman/*.xml'
+        searchFolder: '$(Build.SourcesDirectory)'
+      displayName: Publicar sumário dos testes com base no XML gerado
+      condition: always()
+    - task: UploadPostmanHtmlReport@1
+      displayName: Publicar relatório em HTML com resultados dos testes da API REST com Newman
+      inputs:
+        cwd: '$(System.DefaultWorkingDirectory)/$(Path_Tests)'
+      condition: always()
+    - script: |
+        cd ./app
+        cat $(File_Log_Execution_WebApp)
+      displayName: Exibir log de execução da aplicação testada
+      condition: Always()
+- stage: Build
+  displayName: Build image
+  dependsOn: Tests
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: Docker@2
+      displayName: Build an image
+      inputs:
+        containerRegistry: 'dockerhubrenatogroffetestes'
+        repository: 'renatogroffetestes/testesdevopsexperience'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          latest
+          $(tag)
